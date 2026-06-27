@@ -1,0 +1,33 @@
+{
+    "source": {
+        "type": "postgres",
+        "connection_string": "postgresql://user:password@localhost:5432/source_db",
+        "query": "SELECT id, user_id, amount, status, updated_at FROM transactions WHERE updated_at > $1",
+        "poll_interval_secs": 5
+    },
+    "transforms": [
+        {
+            "type": "filter",
+            "column": "status",
+            "value": "active"
+        },
+        {
+            "type": "map",
+            "rename": {
+                "user_id": "client_id",
+                "amount": "total_amount"
+            }
+        },
+        {
+            "type": "aggregate",
+            "group_by": ["client_id"],
+            "sum": "total_amount"
+        }
+    ],
+    "destination": {
+        "type": "postgres",
+        "connection_string": "postgresql://user:password@localhost:5432/destination_db",
+        "table": "orders_summary"
+    }
+}
+
