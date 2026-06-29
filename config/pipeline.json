@@ -20,7 +20,7 @@
         },
         {
             "type": "aggregate",
-            "group_by": ["client_id"],
+            "group_by": "client_id",
             "sum": "total_amount"
         }
     ],

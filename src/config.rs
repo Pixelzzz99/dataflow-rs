@@ -29,7 +29,7 @@ pub enum TransformConfig {
         rename: HashMap<String, String>,
     },
     Aggregate {
-        group_by: Vec<String>,
+        group_by: String,
         sum: String,
     }
 }
