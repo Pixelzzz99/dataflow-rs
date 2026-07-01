@@ -1,0 +1,30 @@
+{
+    "source": {
+        "type": "csv",
+        "watch_dir": "data/watched",
+        "processed_dir": "data/processed",
+        "delimiter": ",",
+        "chunk_size": 10000,
+        "poll_interval_secs": 10
+    },
+    "transforms": [
+        {
+            "type": "filter",
+            "column": "status",
+            "value": "active"
+        },
+        {
+            "type": "map",
+            "rename": {
+                "user_id": "client_id",
+                "amount": "total_amount"
+            }
+        }
+    ],
+    "destination": {
+        "type": "postgres",
+        "connection_string": "postgres://postgres:password@localhost:5432/dest_db",
+        "table": "autopayments",
+        "unique_key": "payment_id"
+    }
+}

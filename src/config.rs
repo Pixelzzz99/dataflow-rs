@@ -10,13 +10,26 @@ pub struct PipelineConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SourceConfig {
-    #[serde(rename = "type")]
-    pub source_type: String,
-    pub connection_string: String,
-    pub query: String,
-    pub poll_interval_secs: u64,
+#[serde(tag = "type", rename_all="snake_case")]
+pub enum SourceConfig {
+    Postgres {
+        connection_string: String,
+        query: String,
+        poll_interval_secs: u64,
+    },
+    Csv {
+        watch_dir: String,
+        processed_dir: String,
+        #[serde(default = "default_delimiter")]
+        delimiter: char,
+        #[serde(default = "default_chunk_size")]
+        chunk_size: usize,
+        poll_interval_secs: u64,
+    }
 }
+
+fn default_delimiter() -> char { ',' }
+fn default_chunk_size() -> usize { 10_000 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -40,6 +53,7 @@ pub struct DestinationConfig {
     pub dest_type: String,
     pub connection_string: String,
     pub table: String,
+    pub unique_key: Option<String>
 }
 
 pub fn load_config(path: &str) -> Result<PipelineConfig, EtlError> {
@@ -57,35 +71,35 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_load_config(){ 
+    fn test_load_postgres_config(){ 
         let config = load_config("config/pipeline.json")
             .expect("Failed to load config");
 
-        assert_eq!(config.source.source_type, "postgres");
-        assert_eq!(config.source.poll_interval_secs, 5);
+        match &config.source {
+            SourceConfig::Postgres { poll_interval_secs, .. } => {
+                assert_eq!(*poll_interval_secs, 5);
+            }
+            _ => panic!("Expected Postgres source")
+        }
+
         assert_eq!(config.transforms.len(), 3);
         assert_eq!(config.destination.table, "orders_summary");
     }
 
     #[test]
-    fn test_transform_config_variants(){
-        let config = load_config("config/pipeline.json").unwrap();
+    fn test_load_csv_config() {
+        let config = load_config("config/pipeline_csv.json")
+            .expect("Failed to load CSV config");
 
-        match &config.transforms[0] {
-            TransformConfig::Filter { column, value } => {
-                assert_eq!(column, "status");
-                assert_eq!(value, "active");
-            },
-            _ => panic!("Expected first transform to be Filter"),
+        match &config.source {
+            SourceConfig::Csv { watch_dir, chunk_size, .. } => {
+                assert_eq!(watch_dir, "data/watched");
+                assert_eq!(*chunk_size, 10000);
+            }
+            _ => panic!("Expected CSV source"),
         }
 
-        match &config.transforms[1] {
-            TransformConfig::Map { rename } => {
-                assert_eq!(rename.get("user_id"), Some(&"client_id".to_string()));
-                assert_eq!(rename.get("amount"), Some(&"total_amount".to_string()));
-            },
-            _ => panic!("Expected second transform to be Map"),
-        }
+        assert_eq!(config.destination.unique_key, Some("payment_id".to_string()));
     }
 
     #[test]

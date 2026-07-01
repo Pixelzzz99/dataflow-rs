@@ -5,11 +5,12 @@ mod extractor;
 mod loader;
 mod transformer;
 mod pipeline;
+mod state;
 
 use std::sync::{Arc, Mutex};
-use sqlx::pool;
 use tokio::time::{sleep, Duration};
-use config::{TransformConfig, load_config};
+
+use config::{SourceConfig, TransformConfig, load_config};
 use extractor::postgres::PostgresExtractor;
 use transformer::{
     filter::FilterTransformer,
@@ -21,7 +22,6 @@ use pipeline::{Pipeline, PipelineState};
 
 #[tokio::main]
 async fn main() {
-    println!("Hello, world!");
     env_logger::init();
 
     let args: Vec<String> = std::env::args().collect();
@@ -37,13 +37,21 @@ async fn main() {
         }
     };
 
-    let poll_interval = config.source.poll_interval_secs;
-    log::info!("Poll interval: {}s", poll_interval);
 
-    log::info!("connecting to source DB...");
+
+    let (poll_interval, connection_string, query) = match &config.source {
+        SourceConfig::Postgres { poll_interval_secs, connection_string, query } => {
+            (*poll_interval_secs, connection_string.clone(), query.clone())
+        }
+        SourceConfig::Csv {poll_interval_secs, ..} => {
+            log::error!("CSV source not yet supported in main use v2");
+            std::process::exit(1);
+        }
+    };
+
     let extractor = match PostgresExtractor::connect(
-        &config.source.connection_string, 
-        config.source.query.clone(),
+        &connection_string, 
+        query,
     ).await {
         Ok(e) => e,
         Err(e) => {
