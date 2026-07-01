@@ -1,9 +1,9 @@
+use crate::error::EtlError;
+use crate::types::Row;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use crate::types::Row;
-use crate::error::EtlError;
 
-
+pub mod csv;
 pub mod postgres;
 
 #[async_trait]
