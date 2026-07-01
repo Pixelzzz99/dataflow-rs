@@ -1,31 +1,33 @@
-mod types;
-mod error;
 mod config;
+mod error;
 mod extractor;
 mod loader;
-mod transformer;
 mod pipeline;
+mod retry;
 mod state;
+mod transformer;
+mod types;
 
 use std::sync::{Arc, Mutex};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use config::{SourceConfig, TransformConfig, load_config};
 use extractor::postgres::PostgresExtractor;
-use transformer::{
-    filter::FilterTransformer,
-    mapper::MapTransformer,
-    aggregator::AggregateTransformer,
-};
 use loader::postgres::PostgresLoader;
 use pipeline::{Pipeline, PipelineState};
+use transformer::{
+    aggregator::AggregateTransformer, filter::FilterTransformer, mapper::MapTransformer,
+};
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
 
     let args: Vec<String> = std::env::args().collect();
-    let config_path = args.get(1).map(String::as_str).unwrap_or("config/pipeline.json");
+    let config_path = args
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or("config/pipeline.json");
 
     log::info!("Loading config from: {}", config_path);
 
@@ -37,22 +39,25 @@ async fn main() {
         }
     };
 
-
-
     let (poll_interval, connection_string, query) = match &config.source {
-        SourceConfig::Postgres { poll_interval_secs, connection_string, query } => {
-            (*poll_interval_secs, connection_string.clone(), query.clone())
-        }
-        SourceConfig::Csv {poll_interval_secs, ..} => {
+        SourceConfig::Postgres {
+            poll_interval_secs,
+            connection_string,
+            query,
+        } => (
+            *poll_interval_secs,
+            connection_string.clone(),
+            query.clone(),
+        ),
+        SourceConfig::Csv {
+            poll_interval_secs, ..
+        } => {
             log::error!("CSV source not yet supported in main use v2");
             std::process::exit(1);
         }
     };
 
-    let extractor = match PostgresExtractor::connect(
-        &connection_string, 
-        query,
-    ).await {
+    let extractor = match PostgresExtractor::connect(&connection_string, query).await {
         Ok(e) => e,
         Err(e) => {
             log::error!("Failed to connect to source: {}", e);
@@ -60,23 +65,31 @@ async fn main() {
         }
     };
 
-    let transformers: Vec<Box<dyn transformer::Transformer>> = config.transforms
-        .iter().map(|tc| -> Box<dyn transformer::Transformer> {
+    let transformers: Vec<Box<dyn transformer::Transformer>> = config
+        .transforms
+        .iter()
+        .map(|tc| -> Box<dyn transformer::Transformer> {
             match tc {
-                TransformConfig::Filter { column, value } => 
-                    Box::new(FilterTransformer::new(column.clone(), value.clone())),
-                TransformConfig::Map { rename }  => 
-                    Box::new(MapTransformer::new(rename.clone())),
-                TransformConfig::Aggregate { group_by , sum } => 
-                    Box::new(AggregateTransformer::new(group_by.clone(), sum.clone())), 
+                TransformConfig::Filter { column, value } => {
+                    Box::new(FilterTransformer::new(column.clone(), value.clone()))
+                }
+                TransformConfig::Map { rename } => Box::new(MapTransformer::new(rename.clone())),
+                TransformConfig::Aggregate { group_by, sum } => {
+                    Box::new(AggregateTransformer::new(group_by.clone(), sum.clone()))
+                }
             }
-        }).collect();
+        })
+        .collect();
 
     log::info!("Connecting to destination DB...");
     let loader = match PostgresLoader::connect(
         &config.destination.connection_string,
         config.destination.table.clone(),
-    ).await {
+        10_000,
+        config.destination.unique_key.clone(),
+    )
+    .await
+    {
         Ok(l) => l,
         Err(e) => {
             log::error!("Failed to connect to destination: {}", e);
@@ -84,11 +97,7 @@ async fn main() {
         }
     };
 
-    let pipeline = Pipeline::new(
-        Box::new(extractor),
-        transformers,
-        Box::new(loader),
-    );
+    let pipeline = Pipeline::new(Box::new(extractor), transformers, Box::new(loader));
 
     let state = Arc::new(Mutex::new(PipelineState::new()));
 
@@ -100,18 +109,12 @@ async fn main() {
             Ok(count) => log::info!("Processed {} rows", count),
             Err(e) => {
                 log::error!("Pipeline error: {}", e);
-                if let Ok(mut s) = state.lock(){
+                if let Ok(mut s) = state.lock() {
                     s.errors_count += 1;
                 }
-
             }
         }
 
         sleep(Duration::from_secs(poll_interval)).await;
     }
-
-
-    
-
-
 }
