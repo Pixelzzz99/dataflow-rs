@@ -1,0 +1,32 @@
+{
+  "source": {
+    "type": "clickhouse",
+    "host": "http://localhost:8123",
+    "database": "default",
+    "query": "SELECT id, user_id, amount, status, updated_at FROM orders WHERE updated_at > '{last_run}' FORMAT JSONEachRow",
+    "username": "default",
+    "password": "",
+    "chunk_size": 10000,
+    "poll_interval_secs": 30
+  },
+  "transforms": [
+    {
+      "type": "filter",
+      "column": "status",
+      "value": "active"
+    },
+    {
+      "type": "map",
+      "rename": {
+        "user_id": "client_id",
+        "amount": "total_amount"
+      }
+    }
+  ],
+  "destination": {
+    "type": "postgres",
+    "connection_string": "postgresql://postgres:password@localhost:5432/dest_db",
+    "table": "autopayments",
+    "unique_key": "id"
+  }
+}
