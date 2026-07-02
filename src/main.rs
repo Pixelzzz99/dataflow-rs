@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, sleep};
 
 use config::{SourceConfig, TransformConfig, load_config};
+use extractor::clickhouse::ClickHouseExtractor;
 use extractor::csv::CsvExtractor;
 use extractor::postgres::PostgresExtractor;
 use loader::postgres::PostgresLoader;
@@ -90,6 +91,32 @@ async fn main() {
             };
             (*poll_interval_secs, Box::new(e))
         }
+        SourceConfig::ClickHouse {
+            host,
+            database,
+            query,
+            username,
+            password,
+            chunk_size,
+            poll_interval_secs,
+        } => {
+            log::info!("Source: ClickHouse at {} database {}", host, database);
+            let e = match ClickHouseExtractor::new(
+                host.clone(),
+                database.clone(),
+                query.clone(),
+                username.clone(),
+                password.clone(),
+                *chunk_size,
+            ) {
+                Ok(extractor) => extractor,
+                Err(e) => {
+                    log::error!("Failed to initialize ClickHouse extractor: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            (*poll_interval_secs, Box::new(e))
+        }
     };
 
     let transformers: Vec<Box<dyn transformer::Transformer>> = config
@@ -110,6 +137,7 @@ async fn main() {
 
     let chunk_size = match &config.source {
         SourceConfig::Csv { chunk_size, .. } => *chunk_size,
+        SourceConfig::ClickHouse { chunk_size, .. } => *chunk_size,
         _ => 10_000,
     };
 

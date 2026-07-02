@@ -3,6 +3,7 @@ use crate::types::Row;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+pub mod clickhouse;
 pub mod csv;
 pub mod postgres;
 
