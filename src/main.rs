@@ -12,9 +12,12 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, sleep};
 
 use config::{SourceConfig, TransformConfig, load_config};
+use extractor::csv::CsvExtractor;
 use extractor::postgres::PostgresExtractor;
 use loader::postgres::PostgresLoader;
 use pipeline::{Pipeline, PipelineState};
+use retry::retry_with_backoff;
+use state::PersistentState;
 use transformer::{
     aggregator::AggregateTransformer, filter::FilterTransformer, mapper::MapTransformer,
 };
@@ -28,8 +31,10 @@ async fn main() {
         .get(1)
         .map(String::as_str)
         .unwrap_or("config/pipeline.json");
+    let state_path = args.get(2).map(String::as_str).unwrap_or("etl_state.json");
 
     log::info!("Loading config from: {}", config_path);
+    log::info!("Loading state from {}", state_path);
 
     let config = match load_config(config_path) {
         Ok(c) => c,
@@ -39,29 +44,51 @@ async fn main() {
         }
     };
 
-    let (poll_interval, connection_string, query) = match &config.source {
+    let persistent_state = Arc::new(Mutex::new(PersistentState::load(state_path)));
+    log::info!(
+        "Loaded state: {} files already processed",
+        persistent_state.lock().unwrap().processed_files.len()
+    );
+
+    let (poll_interval, extractor): (u64, Box<dyn extractor::Extractor>) = match &config.source {
         SourceConfig::Postgres {
-            poll_interval_secs,
             connection_string,
             query,
-        } => (
-            *poll_interval_secs,
-            connection_string.clone(),
-            query.clone(),
-        ),
-        SourceConfig::Csv {
-            poll_interval_secs, ..
+            poll_interval_secs,
         } => {
-            log::error!("CSV source not yet supported in main use v2");
-            std::process::exit(1);
+            log::info!("Source:PostgreSQL");
+            let e = match PostgresExtractor::connect(connection_string, query.clone()).await {
+                Ok(extractor) => extractor,
+                Err(e) => {
+                    log::error!("Failed to connect to source: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            (*poll_interval_secs, Box::new(e))
         }
-    };
-
-    let extractor = match PostgresExtractor::connect(&connection_string, query).await {
-        Ok(e) => e,
-        Err(e) => {
-            log::error!("Failed to connect to source: {}", e);
-            std::process::exit(1);
+        SourceConfig::Csv {
+            watch_dir,
+            processed_dir,
+            delimiter,
+            chunk_size,
+            poll_interval_secs,
+        } => {
+            log::info!("Source: CSV files from {}", watch_dir);
+            let e = match CsvExtractor::new(
+                watch_dir,
+                processed_dir,
+                *delimiter,
+                *chunk_size,
+                Arc::clone(&persistent_state),
+                state_path.to_string(),
+            ) {
+                Ok(extractor) => extractor,
+                Err(e) => {
+                    log::error!("Failed to initialize CSV extractor: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            (*poll_interval_secs, Box::new(e))
         }
     };
 
@@ -81,6 +108,11 @@ async fn main() {
         })
         .collect();
 
+    let chunk_size = match &config.source {
+        SourceConfig::Csv { chunk_size, .. } => *chunk_size,
+        _ => 10_000,
+    };
+
     log::info!("Connecting to destination DB...");
     let loader = match PostgresLoader::connect(
         &config.destination.connection_string,
@@ -97,8 +129,7 @@ async fn main() {
         }
     };
 
-    let pipeline = Pipeline::new(Box::new(extractor), transformers, Box::new(loader));
-
+    let pipeline = Pipeline::new(extractor, transformers, Box::new(loader));
     let state = Arc::new(Mutex::new(PipelineState::new()));
 
     log::info!("ETL Engine started. Polling every {}s...", poll_interval);
@@ -106,12 +137,19 @@ async fn main() {
     loop {
         match pipeline.run(&state).await {
             Ok(0) => log::info!("No new data"),
-            Ok(count) => log::info!("Processed {} rows", count),
+            Ok(count) => {
+                log::info!("Processed {} rows", count);
+                let mut s = persistent_state.lock().unwrap();
+                s.total_rows_processed += count;
+                let snapshot = s.clone();
+                drop(s);
+                if let Err(e) = snapshot.save(state_path) {
+                    log::warn!("Failed to save state: {}", e);
+                }
+            }
             Err(e) => {
                 log::error!("Pipeline error: {}", e);
-                if let Ok(mut s) = state.lock() {
-                    s.errors_count += 1;
-                }
+                persistent_state.lock().unwrap().total_errors += 1;
             }
         }
 
