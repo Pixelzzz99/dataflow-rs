@@ -1,0 +1,10 @@
+target/
+.git
+.gitignore
+docs/
+data/
+*.md
+etl_state.json
+**/*.log
+.env
+
