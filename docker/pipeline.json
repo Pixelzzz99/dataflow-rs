@@ -1,0 +1,17 @@
+{
+    "source": {
+        "type": "csv",
+        "watch_dir": "/app/data/watched",
+        "processed_dir": "/app/data/processed",
+        "delimiter": ",",
+        "chunk_size": 10000,
+        "poll_interval_secs": 10
+    },
+    "transforms": [],
+    "destination":{
+        "type": "postgres",
+        "connection_string": "postgresql://etl:etlpassword@postgres:5432/etldb",
+        "table": "imported_data",
+        "unique_key": null
+    }
+}

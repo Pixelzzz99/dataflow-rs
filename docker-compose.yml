@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: etl
+      POSTGRES_PASSWORD: etlpassword
+      POSTGRES_DB: etldb
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl -d etldb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  etl-engine:
+    build: .
+    image: etl-engine:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: info
+    volumes:
+      - ./docker:/app/config:ro
+      - ./data:/app/data
+    command: ["/app/config/pipeline.json", "/app/data/etl_state.json"]
+    restart: unless-stopped
