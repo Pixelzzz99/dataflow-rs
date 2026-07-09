@@ -1,8 +1,8 @@
-use serde::{ Deserialize, Serialize };
-use std::collections::HashSet;
-use chrono::{DateTime, Utc};
 use crate::error::EtlError;
-
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::collections::VecDeque;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PersistentState {
@@ -30,12 +30,11 @@ impl PersistentState {
     }
 
     pub fn save(&self, path: &str) -> Result<(), EtlError> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| EtlError::ConfigError(e.to_string()))?;
-        std::fs::write(path, json)
-            .map_err(|e| EtlError::ConfigError(
-                    format!("Cannot write state file {}: {}", path, e)
-            ))?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| EtlError::ConfigError(e.to_string()))?;
+        std::fs::write(path, json).map_err(|e| {
+            EtlError::ConfigError(format!("Cannot write state file {}: {}", path, e))
+        })?;
 
         Ok(())
     }
@@ -49,20 +48,45 @@ impl PersistentState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LogBuffer {
+    logs: VecDeque<String>,
+    capacity: usize,
+}
+
+impl LogBuffer {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            logs: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    pub fn push(&mut self, line: String) {
+        if self.logs.len() >= self.capacity {
+            self.logs.pop_front();
+        }
+        self.logs.push_back(line);
+    }
+
+    pub fn get_all(&self) -> Vec<String> {
+        self.logs.iter().cloned().collect()
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_new_state(){
+    fn test_new_state() {
         let state = PersistentState::new();
         assert_eq!(state.total_rows_processed, 0);
         assert!(state.processed_files.is_empty());
     }
 
     #[test]
-    fn test_mark_and_check_file(){
+    fn test_mark_and_check_file() {
         let mut state = PersistentState::new();
         assert!(!state.is_file_processed("2026-01.csv"));
 
@@ -88,9 +112,23 @@ mod tests {
     }
 
     #[test]
-    fn test_load_missing_file(){
+    fn test_load_missing_file() {
         let state = PersistentState::load("/tmp/non_existent__etl_state.json");
         assert_eq!(state.total_rows_processed, 0);
     }
 
+    #[test]
+    fn test_log_buffer_capacity() {
+        let mut buf = LogBuffer::new(3);
+        buf.push("line1".to_string());
+        buf.push("line2".to_string());
+        buf.push("line3".to_string());
+        buf.push("line4".to_string());
+        buf.push("line5".to_string());
+
+        let logs = buf.get_all();
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0], "line3");
+        assert_eq!(logs[2], "line5");
+    }
 }
