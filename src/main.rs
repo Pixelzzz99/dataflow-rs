@@ -7,6 +7,7 @@ mod retry;
 mod state;
 mod transformer;
 mod types;
+mod web;
 
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, sleep};
@@ -22,6 +23,7 @@ use state::PersistentState;
 use transformer::{
     aggregator::AggregateTransformer, filter::FilterTransformer, mapper::MapTransformer,
 };
+use web::{AppState, PipelineStatus, start_server};
 
 #[tokio::main]
 async fn main() {
@@ -34,8 +36,16 @@ async fn main() {
         .unwrap_or("config/pipeline.json");
     let state_path = args.get(2).map(String::as_str).unwrap_or("etl_state.json");
 
+    let web_port: u16 = args
+        .get(3)
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(3000);
+
     log::info!("Loading config from: {}", config_path);
     log::info!("Loading state from {}", state_path);
+    log::info!("Web UI: http://localhost:{}", web_port);
+
+    let app_state = AppState::new(config_path.to_string());
 
     let config = match load_config(config_path) {
         Ok(c) => c,
@@ -46,10 +56,15 @@ async fn main() {
     };
 
     let persistent_state = Arc::new(Mutex::new(PersistentState::load(state_path)));
-    log::info!(
-        "Loaded state: {} files already processed",
-        persistent_state.lock().unwrap().processed_files.len()
-    );
+    {
+        let ps = persistent_state.lock().unwrap();
+        log::info!(
+            "Loaded state: {} files already processed, last_run: {}",
+            ps.processed_files.len(),
+            ps.last_run
+        );
+        app_state.restore_stats(ps.total_rows_processed, ps.total_errors);
+    }
 
     let (poll_interval, extractor): (u64, Box<dyn extractor::Extractor>) = match &config.source {
         SourceConfig::Postgres {
@@ -145,7 +160,7 @@ async fn main() {
     let loader = match PostgresLoader::connect(
         &config.destination.connection_string,
         config.destination.table.clone(),
-        10_000,
+        chunk_size,
         config.destination.unique_key.clone(),
     )
     .await
@@ -158,17 +173,46 @@ async fn main() {
     };
 
     let pipeline = Pipeline::new(extractor, transformers, Box::new(loader));
-    let state = Arc::new(Mutex::new(PipelineState::new()));
+    let pipeline_state = {
+        let ps = persistent_state.lock().unwrap();
+        Arc::new(Mutex::new(PipelineState {
+            last_run: ps.last_run,
+            rows_processed: ps.total_rows_processed,
+            errors_count: ps.total_errors,
+        }))
+    };
+
+    let app_state_web = app_state.clone();
+    let app_state_pipeline = app_state.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = start_server(app_state_web, web_port).await {
+            log::error!("Web server stopped: {}", e);
+        }
+    });
 
     log::info!("ETL Engine started. Polling every {}s...", poll_interval);
 
     loop {
-        match pipeline.run(&state).await {
-            Ok(0) => log::info!("No new data"),
+        app_state_pipeline.set_status(PipelineStatus::Running);
+        let result = retry_with_backoff(3, 2, "pipeline", || pipeline.run(&pipeline_state)).await;
+
+        match result {
+            Ok(0) => {
+                app_state_pipeline.set_status(PipelineStatus::Idle);
+                let msg = "No new data".to_string();
+                app_state_pipeline.log(format!("[INFO] {}", msg));
+                log::info!("{}", msg);
+            }
             Ok(count) => {
                 log::info!("Processed {} rows", count);
+                app_state_pipeline.add_rows(count);
+                app_state_pipeline.set_status(PipelineStatus::Idle);
+                app_state_pipeline.log(format!("[INFO] Processed {} rows", count));
+
                 let mut s = persistent_state.lock().unwrap();
                 s.total_rows_processed += count;
+                s.last_run = pipeline_state.lock().unwrap().last_run;
                 let snapshot = s.clone();
                 drop(s);
                 if let Err(e) = snapshot.save(state_path) {
@@ -177,7 +221,17 @@ async fn main() {
             }
             Err(e) => {
                 log::error!("Pipeline error: {}", e);
-                persistent_state.lock().unwrap().total_errors += 1;
+                app_state_pipeline.add_error();
+                app_state_pipeline.set_status(PipelineStatus::Error(e.to_string()));
+                app_state_pipeline.log(format!("[ERROR] {}", e));
+
+                let mut s = persistent_state.lock().unwrap();
+                s.total_errors += 1;
+                let snapshot = s.clone();
+                drop(s);
+                if let Err(save_err) = snapshot.save(state_path) {
+                    log::warn!("Failed to save state: {}", save_err);
+                }
             }
         }
 

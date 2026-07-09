@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETL Engine Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        .log-container { font-family: monospace; font-size: 12px; }
+        .log-info  { color: #4ade80; }
+        .log-error { color: #f87171; }
+        .log-warn  { color: #fbbf24; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-6" x-data="dashboard()">
+
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-white">⚡ ETL Engine</h1>
+        <p class="text-gray-400 mt-1" x-text="'Config: ' + config_path"></p>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div class="bg-gray-800 rounded-xl p-4">
+            <div class="text-gray-400 text-sm mb-1">Status</div>
+            <div class="text-xl font-bold flex items-center gap-2">
+                <span :class="statusColor()" class="w-3 h-3 rounded-full inline-block"></span>
+                <span x-text="status.toUpperCase()"></span>
+            </div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4">
+            <div class="text-gray-400 text-sm mb-1">Uptime</div>
+            <div class="text-xl font-bold" x-text="formatUptime(uptime_secs)"></div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4">
+            <div class="text-gray-400 text-sm mb-1">Rows Processed</div>
+            <div class="text-xl font-bold text-green-400" x-text="total_rows.toLocaleString()"></div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4">
+            <div class="text-gray-400 text-sm mb-1">Errors</div>
+            <div class="text-xl font-bold"
+                 :class="total_errors > 0 ? 'text-red-400' : 'text-gray-300'"
+                 x-text="total_errors"></div>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-xl p-4">
+        <div class="flex justify-between items-center mb-3">
+            <h2 class="text-lg font-semibold">Live Logs</h2>
+            <span class="text-xs text-gray-500">Last 100 lines</span>
+        </div>
+        <div class="log-container bg-gray-900 rounded-lg p-3 h-96 overflow-y-auto" id="log-container">
+            <template x-for="(log, i) in logs" :key="i">
+                <div :class="logClass(log)" x-text="log" class="py-0.5"></div>
+            </template>
+        </div>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                status: 'loading',
+                uptime_secs: 0,
+                total_rows: 0,
+                total_errors: 0,
+                config_path: '',
+                logs: [],
+                ws: null,
+
+                init() {
+                    this.fetchStatus();
+                    this.fetchLogs();
+                    setInterval(() => this.fetchStatus(), 3000);
+                    this.connectWs();
+                },
+
+                async fetchStatus() {
+                    try {
+                        const r = await fetch('/api/status');
+                        const data = await r.json();
+                        this.status = data.status;
+                        this.uptime_secs = data.uptime_secs;
+                        this.total_rows = data.total_rows;
+                        this.total_errors = data.total_errors;
+                        this.config_path = data.config_path;
+                    } catch(e) { this.status = 'error'; }
+                },
+
+                async fetchLogs() {
+                    try {
+                        const r = await fetch('/api/logs');
+                        const data = await r.json();
+                        this.logs = data.logs;
+                        this.scrollToBottom();
+                    } catch(e) {}
+                },
+
+                connectWs() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);
+                    this.ws.onmessage = (e) => {
+                        this.logs.push(e.data);
+                        if (this.logs.length > 100) this.logs.shift();
+                        this.scrollToBottom();
+                    };
+                    this.ws.onclose = () => setTimeout(() => this.connectWs(), 2000);
+                },
+
+                scrollToBottom() {
+                    this.$nextTick(() => {
+                        const el = document.getElementById('log-container');
+                        if (el) el.scrollTop = el.scrollHeight;
+                    });
+                },
+
+                statusColor() {
+                    return {
+                        'bg-green-400': this.status === 'running',
+                        'bg-yellow-400': this.status === 'idle',
+                        'bg-red-400':   this.status === 'error',
+                        'bg-gray-400':  this.status === 'loading',
+                    };
+                },
+
+                logClass(log) {
+                    if (log.includes('ERROR')) return 'log-error';
+                    if (log.includes('WARN'))  return 'log-warn';
+                    return 'log-info';
+                },
+
+                formatUptime(secs) {
+                    const h = Math.floor(secs / 3600);
+                    const m = Math.floor((secs % 3600) / 60);
+                    const s = secs % 60;
+                    if (h > 0) return `${h}h ${m}m`;
+                    if (m > 0) return `${m}m ${s}s`;
+                    return `${s}s`;
+                },
+            }
+        }
+    </script>
+</body>
+</html>
