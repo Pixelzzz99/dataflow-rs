@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 
-A lightweight, async **ETL** (Extract → Transform → Load) engine written in Rust.
+**JSON pipelines. One Rust binary.**
 
-Configure pipelines with JSON — no code changes needed to add sources, transforms, or destinations. Includes incremental polling, durable state, retries, and a live Web dashboard.
+Async **ETL** (Extract → Transform → Load): poll, transform, and load data with a config file — Postgres, ClickHouse, CSV — plus incremental state, retries, and a live Web dashboard. No code changes needed to reconfigure the pipeline.
 
 ---
 

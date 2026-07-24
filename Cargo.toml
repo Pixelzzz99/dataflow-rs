@@ -2,7 +2,7 @@
 name = "etl-engine"
 version = "0.1.0"
 edition = "2024"
-description = "Lightweight async ETL engine with JSON pipelines, Postgres/ClickHouse/CSV sources, and a live Web UI"
+description = "JSON pipelines. One Rust binary. Async ETL for Postgres, ClickHouse, and CSV with a live Web UI"
 license = "MIT"
 repository = "https://github.com/Pixelzzz99/dataflow-rs"
 readme = "README.md"
